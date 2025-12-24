@@ -1,5 +1,5 @@
 [app]
-title = MagPro
+title = MagPro Restaurant
 package.name = MagPro
 package.domain = org.magpro
 source.dir = .
