@@ -1,6 +1,7 @@
 from bidi.algorithm import get_display
 from datetime import datetime, timedelta
 from functools import partial
+from kivy.animation import Animation
 from kivy.clock import Clock, mainthread
 from kivy.config import Config
 from kivy.core.clipboard import Clipboard
@@ -390,7 +391,7 @@ class TableCard(MDCard):
         self.height = dp(140)
         self.radius = [12]
         self.elevation = 2
-        self.ripple_behavior = False
+        self.ripple_behavior = True
         self._long_press_event = None
         self._long_press_triggered = False
         self.header_box = MDBoxLayout(size_hint_y=None, height=dp(35), padding=[5, 0], md_bg_color=(0, 0, 0, 0.1))
@@ -402,24 +403,13 @@ class TableCard(MDCard):
         self.add_widget(self.body_box)
         self.update_state(table)
 
-    def on_sub_seat_click(self, seat_num):
-        Clock.schedule_once(lambda dt: self._delayed_sub_seat_click(seat_num), 0)
-
-    def _delayed_sub_seat_click(self, seat_num):
-        if self.app.move_mode:
-            pass
-        else:
-            self.app.current_table = self.table
-            self.app.open_seat_order(seat_num)
-
     def update_state(self, table):
         self.table = table
         status = table['status']
         occupied_seats = table.get('occupied_seats', []) or []
         if status == 'occupied':
             self.md_bg_color = (0.85, 0.3, 0.3, 1)
-            is_group = 0 in occupied_seats
-            if not is_group and occupied_seats:
+            if 0 not in occupied_seats and occupied_seats:
                 self.md_bg_color = (0.95, 0.95, 0.95, 1)
         elif status == 'reserved':
             self.md_bg_color = (1, 0.6, 0, 1)
@@ -430,16 +420,16 @@ class TableCard(MDCard):
         self.body_box.clear_widgets()
         if status == 'occupied' and 0 not in occupied_seats and occupied_seats:
             try:
-                chairs_count = int(table.get('chairs', 4))
+                chair_count = int(table.get('chairs', 4))
             except:
-                chairs_count = 4
+                chair_count = 4
             grid = MDGridLayout(cols=2, spacing=dp(5), padding=dp(5))
-            for i in range(1, chairs_count + 1):
+            for i in range(1, chair_count + 1):
                 is_busy = i in occupied_seats
                 seat_color = (0.85, 0.3, 0.3, 1) if is_busy else (0.3, 0.7, 0.3, 1)
                 seat_card = MDCard(md_bg_color=seat_color, radius=[4], elevation=0, ripple_behavior=True)
-                seat_card.bind(on_release=lambda x, seat=i: self.on_sub_seat_click(seat))
-                seat_card.add_widget(MDLabel(text=str(i), halign='center', valign='middle', theme_text_color='Custom', text_color=(1, 1, 1, 1), bold=True))
+                seat_card.bind(on_release=lambda x, s=i: self.on_sub_seat_click(s))
+                seat_card.add_widget(MDLabel(text=str(i), halign='center', theme_text_color='Custom', text_color=(1, 1, 1, 1), bold=True))
                 grid.add_widget(seat_card)
             self.body_box.add_widget(grid)
         else:
@@ -448,24 +438,29 @@ class TableCard(MDCard):
                 icon_name = 'silverware-fork-knife'
             elif status == 'reserved':
                 icon_name = 'clock-outline'
-            icon = MDIcon(icon=icon_name, theme_text_color='Custom', text_color=text_color, pos_hint={'center_x': 0.5}, font_size='40sp', halign='center')
+            icon = MDIcon(icon=icon_name, theme_text_color='Custom', text_color=text_color, pos_hint={'center_x': 0.5}, font_size='40sp')
             info_text = 'Libre'
             if status == 'occupied':
                 try:
-                    total = int(float(table.get('total', 0)))
-                    info_text = f'{total} DA'
+                    info_text = f"{int(float(table.get('total', 0)))} DA"
                 except:
                     info_text = '0 DA'
             elif status == 'reserved':
                 info_text = 'Réservé'
-            lbl_info = MDLabel(text=info_text, halign='center', bold=True, theme_text_color='Custom', text_color=text_color, font_style='H5')
             self.body_box.add_widget(icon)
-            self.body_box.add_widget(lbl_info)
+            self.body_box.add_widget(MDLabel(text=info_text, halign='center', bold=True, theme_text_color='Custom', text_color=text_color, font_style='H6'))
+
+    def on_sub_seat_click(self, seat_num):
+        if self.app.move_mode:
+            self.app.process_destination_selection(self.table)
+        else:
+            self.app.current_table = self.table
+            self.app.open_seat_order(seat_num)
 
     def on_press(self):
         self._long_press_triggered = False
         self._long_press_event = Clock.schedule_once(self._on_long_press, 0.8)
-        super().on_press()
+        return super().on_press()
 
     def _on_long_press(self, dt):
         self._long_press_triggered = True
@@ -475,26 +470,21 @@ class TableCard(MDCard):
         if self._long_press_event:
             Clock.unschedule(self._long_press_event)
             self._long_press_event = None
-        super().on_release()
         if not self._long_press_triggered:
             self._handle_normal_tap()
+        self._long_press_triggered = False
+        return super().on_release()
 
     def _handle_normal_tap(self):
         if self.app.move_mode:
             self.app.process_destination_selection(self.table)
         else:
-            self.app.stop_refresh()
             self.app.current_table = self.table
             occupied_seats = self.table.get('occupied_seats', []) or []
             if self.table['status'] == 'occupied' and 0 in occupied_seats:
                 self.app.open_seat_order(0)
-            elif self.table['status'] == 'occupied' and occupied_seats:
-                self.app.show_chairs_dialog(self.table)
             else:
-                self.show_chairs_dialog_proxy()
-
-    def show_chairs_dialog_proxy(self):
-        self.app.show_chairs_dialog(self.table)
+                self.app.show_chairs_dialog(self.table)
 
 class RestaurantApp(MDApp):
     cart = []
@@ -912,14 +902,28 @@ class RestaurantApp(MDApp):
         UrlRequest(f'http://{self.server_ip}:{DEFAULT_PORT}/api/remind_order', req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=lambda r, res: self.notify('Rappel envoyé en cuisine avec succès', 'success'), on_failure=lambda r, e: self.notify("Échec de l'envoi du rappel", 'error'), on_error=lambda r, e: self.notify('Erreur de connexion', 'error'), timeout=5)
 
     def initiate_move(self, table_info):
-        occupied_seats = table_info.get('occupied_seats', [])
-        if not occupied_seats:
-            self.notify('Impossible : La table est vide', 'warning')
+        UrlRequest(f"http://{self.server_ip}:{DEFAULT_PORT}/api/table_seats/{table_info['id']}", on_success=lambda r, res: self._show_move_options_dialog(table_info, res), on_error=lambda r, e: self.notify('Échec de connexion au serveur', 'error'))
+
+    def _show_move_options_dialog(self, table_info, occupied_dict):
+        if not occupied_dict:
+            self.notify('Table vide, rien à transférer', 'warning')
             return
-        if 0 in occupied_seats:
-            self._start_move_mode(table_info, 0)
-            return
-        self._show_seat_selection_for_move(table_info, occupied_seats)
+        content = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=dp(10), padding=dp(10))
+        if '0' in occupied_dict:
+            btn = MDRaisedButton(text=f"Transférer TOUTE la table ({table_info['name']})", size_hint_x=1, md_bg_color=(0.9, 0.5, 0.2, 1), on_release=lambda x: self._start_move_and_close(table_info, 0))
+            content.add_widget(btn)
+        else:
+            content.add_widget(MDLabel(text="Choisir l'élément à déplacer :", halign='center', bold=True))
+            for seat_num, data in occupied_dict.items():
+                btn = MDRaisedButton(text=f"Transférer Chaise {seat_num} ({int(float(data['amount']))} DA)", size_hint_x=1, on_release=lambda x, s=int(seat_num): self._start_move_and_close(table_info, s))
+                content.add_widget(btn)
+        self.dialog_move_select = MDDialog(title='Options de Transfert', type='custom', content_cls=content, buttons=[MDFlatButton(text='ANNULER', on_release=lambda x: self.dialog_move_select.dismiss())])
+        self.dialog_move_select.open()
+
+    def _start_move_and_close(self, table_info, seat_num):
+        if self.dialog_move_select:
+            self.dialog_move_select.dismiss()
+        self._start_move_mode(table_info, seat_num)
 
     def _show_seat_selection_for_move(self, table_info, occupied_seats):
         if self.dialog_move_select:
@@ -950,29 +954,34 @@ class RestaurantApp(MDApp):
         source = self.move_source_data['table']
         source_seat = self.move_source_data['seat']
         if source['id'] == dest_table['id']:
-            self.notify('Erreur: Destination identique à la source', 'error')
+            self.notify('Destination identique à la source !', 'error')
             self.cancel_move()
             return
-        dest_seats = dest_table.get('occupied_seats', [])
-        if dest_seats:
-            self.notify('Action refusée : La table de destination est occupée.', 'error')
+        UrlRequest(f"http://{self.server_ip}:{DEFAULT_PORT}/api/table_seats/{dest_table['id']}", on_success=lambda r, res: self._decide_final_move(source, source_seat, dest_table, res), on_error=lambda r, e: self.notify('Erreur de vérification destination', 'error'))
+
+    def _decide_final_move(self, source, source_seat, dest_table, dest_seats_dict):
+        if dest_seats_dict:
+            self.notify('Action refusée : Table de destination occupée', 'error')
             self.cancel_move()
-            return
-        self.show_empty_table_mode_dialog(source, source_seat, dest_table)
+        else:
+            self.show_empty_table_mode_dialog(source, source_seat, dest_table)
 
     def show_empty_table_mode_dialog(self, source, source_seat, dest_table):
         if self.dialog_empty_options:
             self.dialog_empty_options.dismiss()
-        source_name = source['name']
-        dest_name = dest_table['name']
         what = 'Tout' if source_seat == 0 else f'Chaise {source_seat}'
         content = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=15, padding=[0, 10, 0, 0])
-        btn_entire = MDRaisedButton(text='TABLE ENTIÈRE (GROUPE)', md_bg_color=(0.2, 0.6, 0.8, 1), size_hint_x=1, on_release=lambda x: self._confirm_empty_choice(source, source_seat, dest_table, 0))
-        btn_chair = MDRaisedButton(text='CHAISE INDIVIDUELLE', md_bg_color=(0.3, 0.7, 0.3, 1), size_hint_x=1, on_release=lambda x: self._confirm_empty_choice(source, source_seat, dest_table, 1))
+        btn_entire = MDRaisedButton(text='TABLE ENTIÈRE (GROUPE)', md_bg_color=(0.2, 0.6, 0.8, 1), size_hint_x=1, on_release=lambda x: self._confirm_move_choice(source, source_seat, dest_table, 0))
+        btn_chair = MDRaisedButton(text='CHAISE INDIVIDUELLE', md_bg_color=(0.3, 0.7, 0.3, 1), size_hint_x=1, on_release=lambda x: self._confirm_move_choice(source, source_seat, dest_table, 1))
         content.add_widget(btn_entire)
         content.add_widget(btn_chair)
-        self.dialog_empty_options = MDDialog(title=f'Vers {dest_name} (Vide)', text=f'Comment voulez-vous installer {what} ?', type='custom', content_cls=content, buttons=[MDFlatButton(text='ANNULER', on_release=lambda x: self.dialog_empty_options.dismiss())])
+        self.dialog_empty_options = MDDialog(title=f"Vers {dest_table['name']} (Vide)", text=f'Comment voulez-vous installer {what} ?', type='custom', content_cls=content, buttons=[MDFlatButton(text='ANNULER', on_release=lambda x: self.dialog_empty_options.dismiss())])
         self.dialog_empty_options.open()
+
+    def _confirm_move_choice(self, source, source_seat, dest_table, target_seat):
+        if self.dialog_empty_options:
+            self.dialog_empty_options.dismiss()
+        self.show_move_confirmation(source, source_seat, dest_table, target_seat)
 
     def _confirm_empty_choice(self, source, source_seat, dest_table, chosen_target_seat):
         if self.dialog_empty_options:
@@ -981,21 +990,13 @@ class RestaurantApp(MDApp):
 
     def show_move_confirmation(self, source, source_seat, dest, target_seat=1):
         what = 'toute la table' if source_seat == 0 else f'la chaise {source_seat}'
-        target_desc = 'Toute la table' if target_seat == 0 else 'Chaise individuelle'
-        dialog = MDDialog(title='Confirmer le transfert', text=f"Transférer {what} de '{source['name']}' vers '{dest['name']}' ?\n\nMode Destination : {target_desc}", buttons=[MDFlatButton(text='NON', on_release=lambda x: self.cancel_move_dialog(dialog)), MDRaisedButton(text='OUI', on_release=lambda x: self.execute_move(source, source_seat, dest, dialog, target_seat))])
+        target_desc = 'Table entière' if target_seat == 0 else 'Chaise individuelle'
+        dialog = MDDialog(title='Confirmer le transfert', text=f"Transférer {what} de '{source['name']}' vers '{dest['name']}' ?\n\nMode : {target_desc}", buttons=[MDFlatButton(text='NON', on_release=lambda x: self.cancel_move_dialog(dialog)), MDRaisedButton(text='OUI', on_release=lambda x: self.execute_move(source, source_seat, dest, dialog, target_seat))])
         dialog.open()
 
     def cancel_move_dialog(self, dialog):
         dialog.dismiss()
         self.cancel_move(show_notification=True)
-
-    def cancel_move(self, show_notification=True):
-        self.move_mode = False
-        self.move_source_data = None
-        if show_notification:
-            self.notify('Transfert annulé', 'info')
-        self.toolbar_tables.title = 'Salles & Tables'
-        self.toolbar_tables.md_bg_color = self.theme_cls.primary_color
 
     def execute_move(self, source, source_seat, dest, dialog, target_seat=1):
         dialog.dismiss()
@@ -1005,16 +1006,25 @@ class RestaurantApp(MDApp):
         else:
             url = f'http://{self.server_ip}:{DEFAULT_PORT}/api/move_seat'
             data = {'table_id': source['id'], 'source_seat': source_seat, 'dest_table_id': dest['id'], 'dest_seat': target_seat}
-        UrlRequest(url, req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=lambda r, res: self.on_move_success(res), on_failure=lambda r, e: self.notify('Échec du transfert', 'error'), on_error=lambda r, e: self.notify('Erreur de connexion', 'error'), timeout=5)
+        self.notify('Transfert en cours...', 'info')
+        UrlRequest(url, req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=lambda r, res: self.on_move_success(res), on_failure=lambda r, e: self.notify('Le serveur a rejeté le transfert', 'error'), on_error=lambda r, e: self.notify('Erreur réseau / serveur', 'error'), timeout=5)
 
     def on_move_success(self, res):
         if res.get('status') == 'success':
             self.notify('Transfert effectué avec succès ✅', 'success')
         else:
-            msg = res.get('message', 'Erreur lors du transfert')
+            msg = res.get('message', 'Échec du transfert')
             self.notify(msg, 'error')
         self.cancel_move(show_notification=False)
-        self.fetch_tables()
+
+    def cancel_move(self, show_notification=True):
+        self.move_mode = False
+        self.move_source_data = None
+        if show_notification:
+            self.notify('Transfert annulé', 'info')
+        self.toolbar_tables.title = 'Salles & Tables'
+        self.toolbar_tables.md_bg_color = self.theme_cls.primary_color
+        self.fetch_tables(manual=True)
 
     def notify(self, message, type='info'):
         if not self.status_bar_box:
@@ -1189,22 +1199,39 @@ class RestaurantApp(MDApp):
 
     def update_tables(self, req, result):
         self.request_pending = False
+        if not result:
+            return
         try:
             sorted_tables = sorted(result, key=lambda x: x['name'])
-            existing_ids = set(self.table_widgets.keys())
-            new_ids = set((t['id'] for t in sorted_tables))
-            for tid in existing_ids - new_ids:
-                widget = self.table_widgets.pop(tid)
-                if widget.parent:
+            new_ids = {str(t['id']) for t in sorted_tables}
+            existing_ids = list(self.table_widgets.keys())
+            for tid in existing_ids:
+                if tid not in new_ids:
+                    widget = self.table_widgets.pop(tid)
                     self.grid_tables.remove_widget(widget)
-            for t_data in sorted_tables:
-                tid = t_data['id']
-                if tid in self.table_widgets:
-                    self.table_widgets[tid].update_state(t_data)
-                else:
-                    new_card = TableCard(t_data, self)
-                    self.table_widgets[tid] = new_card
-                    self.grid_tables.add_widget(new_card)
+
+            def update_chunk(dt, tables_list, index=0):
+                chunk_size = 5
+                end_index = min(index + chunk_size, len(tables_list))
+                for i in range(index, end_index):
+                    t_data = tables_list[i]
+                    tid = str(t_data['id'])
+                    try:
+                        table_total = float(t_data.get('total', 0))
+                    except:
+                        table_total = 0.0
+                    if t_data['status'] == 'occupied' and table_total <= 0:
+                        t_data['status'] = 'available'
+                    if tid in self.table_widgets:
+                        if self.table_widgets[tid].table.get('status') != t_data['status'] or self.table_widgets[tid].table.get('total') != t_data.get('total'):
+                            self.table_widgets[tid].update_state(t_data)
+                    else:
+                        new_card = TableCard(t_data, self)
+                        self.table_widgets[tid] = new_card
+                        self.grid_tables.add_widget(new_card)
+                if end_index < len(tables_list):
+                    Clock.schedule_once(lambda dt: update_chunk(dt, tables_list, end_index), 0.01)
+            update_chunk(0, sorted_tables)
         except Exception as e:
             logging.error(f'Update tables error: {e}')
 
@@ -1250,53 +1277,52 @@ class RestaurantApp(MDApp):
             self.pending_list_container.add_widget(MDBoxLayout(size_hint_y=None, height=dp(5)))
 
     def show_chairs_dialog(self, table):
+        self.stop_refresh()
         self.current_table = table
-        key = f"seats_{table['id']}"
-        if self.cache_store.exists(key):
-            data = self.cache_store.get(key)['data']
-            self._build_chairs_dialog(table, data)
+        try:
+            chair_count = int(table.get('chairs', 0))
+        except:
+            chair_count = 0
+        if chair_count == 0:
+            self.open_seat_order(0)
+            return
         url = f"http://{self.server_ip}:{DEFAULT_PORT}/api/table_seats/{table['id']}"
-        UrlRequest(url, on_success=lambda req, res: self._on_seats_loaded(table, res), on_error=lambda r, e: self.notify('Mode Hors Ligne : Table ouverte.', 'warning'), on_failure=lambda r, e: self.notify('Mode Hors Ligne : Table ouverte.', 'warning'), timeout=3)
 
-    def _on_seats_loaded(self, table, res):
-        self.cache_store.put(f"seats_{table['id']}", data=res)
-        self._build_chairs_dialog(table, res)
-
-    def _load_seats_offline(self, table):
-        key = f"seats_{table['id']}"
-        if self.cache_store.exists(key):
-            data = self.cache_store.get(key)['data']
-            self._build_chairs_dialog(table, data)
-            self.notify('Mode Hors Ligne : Table ouverte.', 'warning')
-        else:
-            self.notify('Erreur : Données non disponibles hors ligne.', 'error')
+        def on_success(req, res):
+            self.cache_store.put(f"seats_{table['id']}", data=res)
+            if '0' in res:
+                self.open_seat_order(0)
+            else:
+                self._build_chairs_dialog(table, res)
+        UrlRequest(url, on_success=on_success, on_error=lambda r, e: self._load_seats_offline(table), timeout=2)
 
     def _build_chairs_dialog(self, table, seats_status):
         if self.dialog_chairs:
             self.dialog_chairs.dismiss()
         self.current_table = table
-        content = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=dp(15), padding=[0, 10, 0, 0])
-        occupied_individuals = [k for k in seats_status.keys() if k != '0']
-        if not occupied_individuals:
-            group_status = seats_status.get('0')
-            group_bg = (0.9, 0.3, 0.3, 1) if group_status else (0.2, 0.6, 0.8, 1)
-            try:
-                amount = int(float(group_status['amount'])) if group_status else 0
-            except:
-                amount = 0
-            group_txt = f'GROUPE\n{amount} DA' if group_status else 'GROUPE'
-            card_group = MDCard(size_hint_y=None, height=dp(60), radius=[12], md_bg_color=group_bg, ripple_behavior=True, on_release=lambda x: self.open_seat_order(0))
-            box_g = MDBoxLayout(orientation='horizontal', padding=10)
-            box_g.add_widget(MDIcon(icon='account-group', theme_text_color='Custom', text_color=(1, 1, 1, 1), font_size='32sp', pos_hint={'center_y': 0.5}))
-            box_g.add_widget(MDLabel(text=group_txt, halign='center', bold=True, theme_text_color='Custom', text_color=(1, 1, 1, 1), font_style='H6'))
-            card_group.add_widget(box_g)
-            content.add_widget(card_group)
-            content.add_widget(MDBoxLayout(size_hint_y=None, height=1, md_bg_color=(0.8, 0.8, 0.8, 1)))
-        grid_chairs = MDGridLayout(cols=2, spacing=dp(10), adaptive_height=True)
         try:
             chair_count = int(table.get('chairs', 4))
         except:
             chair_count = 4
+        content = MDBoxLayout(orientation='vertical', adaptive_height=True, spacing=dp(10), padding=[0, 10, 0, 0])
+        group_status = seats_status.get('0')
+        group_bg = (0.9, 0.3, 0.3, 1) if group_status else (0.2, 0.6, 0.8, 1)
+        try:
+            amount = int(float(group_status['amount'])) if group_status else 0
+        except:
+            amount = 0
+        card_group = MDCard(size_hint_y=None, height=dp(70), radius=[12], md_bg_color=group_bg, ripple_behavior=True)
+        box_g = MDBoxLayout(orientation='horizontal', padding=10, spacing=10)
+        box_g.add_widget(MDIcon(icon='account-group', theme_text_color='Custom', text_color=(1, 1, 1, 1), font_size='32sp', pos_hint={'center_y': 0.5}))
+        box_g.add_widget(MDLabel(text=f'GROUPE\n{amount} DA' if amount > 0 else 'GROUPE', halign='center', bold=True, theme_text_color='Custom', text_color=(1, 1, 1, 1)))
+        if group_status:
+            btn_move = MDIconButton(icon='swap-horizontal', theme_text_color='Custom', text_color=(1, 1, 1, 1), on_release=lambda x: self.initiate_move_direct(table, 0))
+            box_g.add_widget(btn_move)
+        card_group.bind(on_release=lambda x: self.open_seat_order(0))
+        card_group.add_widget(box_g)
+        content.add_widget(card_group)
+        content.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=(0.8, 0.8, 0.8, 1)))
+        grid_chairs = MDGridLayout(cols=2, spacing=dp(10), adaptive_height=True)
         for i in range(1, chair_count + 1):
             s_stat = seats_status.get(str(i))
             is_busy = s_stat is not None
@@ -1305,17 +1331,57 @@ class RestaurantApp(MDApp):
                 amt = int(float(s_stat['amount'])) if is_busy else 0
             except:
                 amt = 0
-            c_text = f'{amt} DA' if is_busy else 'Libre'
-            card = MDCard(size_hint_y=None, height=dp(80), radius=[10], md_bg_color=c_color, ripple_behavior=True, on_release=lambda x, seat=i: self.open_seat_order(seat))
+            card = MDCard(size_hint_y=None, height=dp(85), radius=[10], md_bg_color=c_color, ripple_behavior=True)
             card_box = MDBoxLayout(orientation='vertical', padding=5)
-            card_box.add_widget(MDIcon(icon='chair-school', theme_text_color='Custom', text_color=(1, 1, 1, 1), pos_hint={'center_x': 0.5}, font_size='24sp', halign='center'))
+            row_header = MDBoxLayout(size_hint_y=None, height=dp(30))
+            row_header.add_widget(MDIcon(icon='seat', theme_text_color='Custom', text_color=(1, 1, 1, 1), font_size='22sp'))
+            if is_busy:
+                btn_sw = MDIconButton(icon='swap-horizontal', icon_size='18sp', theme_text_color='Custom', text_color=(1, 1, 1, 1), on_release=lambda x, s=i: self.initiate_move_direct(table, s))
+                row_header.add_widget(btn_sw)
+            card_box.add_widget(row_header)
             card_box.add_widget(MDLabel(text=f'Chaise {i}', halign='center', bold=True, theme_text_color='Custom', text_color=(1, 1, 1, 1), font_style='Caption'))
-            card_box.add_widget(MDLabel(text=c_text, halign='center', theme_text_color='Custom', text_color=(1, 1, 1, 1), font_style='Caption'))
+            card_box.add_widget(MDLabel(text=f'{amt} DA' if is_busy else 'Libre', halign='center', theme_text_color='Custom', text_color=(1, 1, 1, 1), font_style='Caption'))
+            card.bind(on_release=lambda x, s=i: self.open_seat_order(s))
             card.add_widget(card_box)
             grid_chairs.add_widget(card)
         content.add_widget(grid_chairs)
         self.dialog_chairs = MDDialog(title=f"Table: {table['name']}", type='custom', content_cls=content)
         self.dialog_chairs.open()
+
+    def initiate_move_direct(self, table_info, seat_num):
+        if self.dialog_chairs:
+            self.dialog_chairs.dismiss()
+        self._start_move_mode(table_info, seat_num)
+
+    def _on_seats_loaded(self, table, res):
+        self._dialog_working = False
+        self.cache_store.put(f"seats_{table['id']}", data=res)
+        if self.dialog_chairs:
+            pass
+        else:
+            self._build_chairs_dialog(table, res)
+
+    def _on_seats_loaded(self, table, res):
+        self.cache_store.put(f"seats_{table['id']}", data=res)
+        self._build_chairs_dialog(table, res)
+
+    def _load_seats_offline(self, table):
+        try:
+            chair_count = int(table.get('chairs', 0))
+        except:
+            chair_count = 0
+        if chair_count == 0:
+            self.open_seat_order(0)
+            return
+        key = f"seats_{table['id']}"
+        if self.cache_store.exists(key):
+            data = self.cache_store.get(key)['data']
+            if '0' in data:
+                self.open_seat_order(0)
+            else:
+                self._build_chairs_dialog(table, data)
+        else:
+            self.notify('Erreur : Données non disponibles hors ligne.', 'error')
 
     def open_seat_order(self, seat_num):
         if self.current_table is None:
@@ -1355,6 +1421,8 @@ class RestaurantApp(MDApp):
                     item['qty'] = 1.0
                 self.cart.append(item)
         self.update_cart_btn()
+        is_seat_occupied = len(self.cart) > 0
+        self.toggle_reminder_button(show=is_seat_occupied)
 
     def load_products(self):
         if self.cache_store.exists('products'):
@@ -1486,21 +1554,22 @@ class RestaurantApp(MDApp):
         self.update_cart_content()
 
     def send_order(self, instance):
-        if not self.cart:
-            self.notify('Votre panier est vide.', 'warning')
+        if not self.cart or len(self.cart) == 0:
+            self.notify('Le panier est vide, envoi impossible', 'warning')
+            if self.dialog_cart:
+                self.dialog_cart.dismiss()
             return
         data = {'table_id': self.current_table['id'], 'seat_number': self.current_seat, 'items': self.cart, 'user_name': self.current_user_name, 'timestamp': str(datetime.now())}
 
         def save_offline(req, error):
             order_key = f'order_{int(datetime.now().timestamp())}_{self.current_seat}'
             self.offline_store.put(order_key, order_data=data)
-            self.notify("Mode Hors Ligne : Commande sauvegardée sur l'appareil.", 'warning')
+            self.notify('Mode Hors Ligne : Commande sauvegardée localement', 'warning')
             self.cart = []
             self.update_cart_btn()
             self.go_back()
             if self.dialog_cart:
                 self.dialog_cart.dismiss()
-            self.silent_refresh(0)
         UrlRequest(f'http://{self.server_ip}:{DEFAULT_PORT}/api/submit_order', req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=self.on_sent, on_failure=save_offline, on_error=save_offline, timeout=5)
         if self.dialog_cart:
             self.dialog_cart.dismiss()
@@ -1538,6 +1607,8 @@ class RestaurantApp(MDApp):
 
     def go_back(self):
         self.screen_manager.current = 'tables'
+        self.cart = []
+        self.update_cart_btn()
         Clock.schedule_once(lambda dt: self.fetch_tables(manual=True), 0.2)
         self.start_refresh()
 
