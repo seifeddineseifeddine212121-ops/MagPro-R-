@@ -112,6 +112,8 @@ class SmartTextField(MDTextField):
         self.font_name_hint_text = 'ArabicFont'
         if self._raw_text:
             self._update_display()
+        from kivy.core.window import Window
+        Window.enable_v_sync = True
 
     def insert_text(self, substring, from_undo=False):
         self._raw_text += substring
@@ -556,20 +558,19 @@ class RestaurantApp(MDApp):
             return str(text)
 
     def get_device_id(self):
-        import platform
-        if platform.system() == 'Windows':
-            return 'PC_DEBUG_ID_12345'
-        if platform.system() == 'Linux':
+        from kivy.utils import platform
+        if platform == 'android':
             try:
                 from jnius import autoclass
                 PythonActivity = autoclass('org.kivy.android.PythonActivity')
                 content_resolver = PythonActivity.mActivity.getContentResolver()
                 Secure = autoclass('android.provider.Settings$Secure')
                 android_id = Secure.getString(content_resolver, Secure.ANDROID_ID)
-                if android_id:
-                    return str(android_id)
+                return str(android_id) if android_id else 'ANDROID_UNKNOWN'
             except Exception as e:
-                pass
+                return 'ANDROID_ERR_ID'
+        elif platform == 'win':
+            return 'PC_DEBUG_ID_12345'
         return 'UNKNOWN_DEVICE_ID'
 
     def check_license_validity(self):
@@ -657,36 +658,31 @@ class RestaurantApp(MDApp):
         success = False
         target_ip = self.local_server_ip
         duration = 0
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(4)
+            sock.settimeout(2.5)
             start_t = time.time()
-            sock.connect((self.local_server_ip, int(DEFAULT_PORT)))
-            duration = (time.time() - start_t) * 1000
-            sock.close()
-            success = True
-            self.active_server_ip = self.local_server_ip
-        except Exception:
-            success = False
-        if not success and self.external_server_ip:
-            try:
-                target_ip = self.external_server_ip
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(4)
-                start_t = time.time()
-                sock.connect((self.external_server_ip, int(DEFAULT_PORT)))
+            result = sock.connect_ex((target_ip, int(DEFAULT_PORT)))
+            if result == 0:
                 duration = (time.time() - start_t) * 1000
-                sock.close()
                 success = True
-                self.active_server_ip = self.external_server_ip
-            except Exception:
-                success = False
+                self.active_server_ip = target_ip
+            elif self.external_server_ip:
+                target_ip = self.external_server_ip
+                result_ext = sock.connect_ex((target_ip, int(DEFAULT_PORT)))
+                if result_ext == 0:
+                    duration = (time.time() - start_t) * 1000
+                    success = True
+                    self.active_server_ip = target_ip
+        except:
+            success = False
+        finally:
+            if sock:
+                sock.close()
         self.is_server_reachable = success
         self.server_ip = self.active_server_ip
-        if success:
-            Clock.schedule_once(lambda dt: self.update_status_bar_safe(True, duration, target_ip), 0)
-        else:
-            Clock.schedule_once(lambda dt: self.update_status_bar_safe(False, 0, 'Aucun'), 0)
+        Clock.schedule_once(lambda dt: self.update_status_bar_safe(success, duration, self.server_ip), 0)
 
     def update_status_bar_safe(self, connected, ping_ms, ip_used):
         if not self.status_bar_label:
@@ -797,31 +793,26 @@ class RestaurantApp(MDApp):
         return root_layout
 
     def filter_products_live(self, instance, text):
-        query = instance.get_value() if hasattr(instance, 'get_value') else text
         if self._search_event:
             self._search_event.cancel()
-        self._search_event = Clock.schedule_once(lambda dt: self._start_background_search(query), 0.3)
+        query = instance.get_value() if hasattr(instance, 'get_value') else text
+        self._search_event = Clock.schedule_once(lambda dt: self._start_background_search(query), 0.4)
 
     def _start_background_search(self, query):
         threading.Thread(target=self._search_worker, args=(query,), daemon=True).start()
 
     def _search_worker(self, query):
-        if not query:
-            self.prepare_products_for_rv(self.all_products)
+        if not query or not query.strip():
+            Clock.schedule_once(lambda dt: self.prepare_products_for_rv(self.all_products), 0)
             return
         query_clean = query.lower().strip()
-        tokens = query_clean.split()
+        query_tokens = query_clean.split()
         filtered = []
         for p in self.all_products:
             p_name = str(p.get('name', '')).lower()
-            is_match = True
-            for token in tokens:
-                if token not in p_name:
-                    is_match = False
-                    break
-            if is_match:
+            if all((token in p_name for token in query_tokens)):
                 filtered.append(p)
-        self.prepare_products_for_rv(filtered)
+        Clock.schedule_once(lambda dt: self.prepare_products_for_rv(filtered), 0)
 
     def prepare_products_for_rv(self, products_list):
         self.current_product_list_source = products_list
@@ -855,7 +846,6 @@ class RestaurantApp(MDApp):
                 price_val = int(float(p.get('price', 0)))
             except:
                 price_val = 0
-            price_fmt = f'{price_val} DA'
             image_filename = p.get('image')
             full_image_url = ''
             if image_filename:
@@ -866,8 +856,9 @@ class RestaurantApp(MDApp):
                     full_image_url = cached_path
                 elif self.is_server_reachable:
                     full_image_url = f'http://{self.server_ip}:{DEFAULT_PORT}/api/images/{safe_filename}'
-                    threading.Thread(target=self._cache_image_worker, args=(full_image_url,), daemon=True).start()
-            rv_data.append({'name_display': display_name, 'price_display': price_fmt, 'image_url': full_image_url, 'raw_data': p})
+                    t = threading.Thread(target=self._cache_image_worker, args=(full_image_url,), daemon=True)
+                    t.start()
+            rv_data.append({'name_display': display_name, 'price_display': f'{price_val} DA', 'image_url': full_image_url, 'raw_data': p})
         self._update_rv_data(rv_data, reset)
 
     @mainthread
@@ -887,12 +878,16 @@ class RestaurantApp(MDApp):
             path = self.image_cache.get_cache_path(url)
             if not path or os.path.exists(path):
                 return
-            with urllib.request.urlopen(url, timeout=10) as response:
+            temp_path = path + '.tmp'
+            with urllib.request.urlopen(url, timeout=7) as response:
                 if response.status == 200:
-                    with open(path, 'wb') as f:
+                    with open(temp_path, 'wb') as f:
                         f.write(response.read())
-        except:
-            pass
+                    os.rename(temp_path, path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            logging.error(f'Image Cache Error: {e}')
 
     def toggle_reminder_button(self, show=False):
         if self.btn_reminder.parent:
@@ -914,7 +909,7 @@ class RestaurantApp(MDApp):
             return
         data = {'table_id': self.current_table['id'], 'seat_number': self.current_seat, 'user_name': self.current_user_name}
         self.notify('Envoi du rappel en cours...', 'info')
-        UrlRequest(f'http://{self.server_ip}:{DEFAULT_PORT}/api/remind_order', req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=lambda r, res: self.notify('Rappel envoyé en cuisine avec succès 🔔', 'success'), on_failure=lambda r, e: self.notify("Échec de l'envoi du rappel", 'error'), on_error=lambda r, e: self.notify('Erreur de connexion', 'error'), timeout=5)
+        UrlRequest(f'http://{self.server_ip}:{DEFAULT_PORT}/api/remind_order', req_body=json.dumps(data), req_headers={'Content-type': 'application/json'}, method='POST', on_success=lambda r, res: self.notify('Rappel envoyé en cuisine avec succès', 'success'), on_failure=lambda r, e: self.notify("Échec de l'envoi du rappel", 'error'), on_error=lambda r, e: self.notify('Erreur de connexion', 'error'), timeout=5)
 
     def initiate_move(self, table_info):
         occupied_seats = table_info.get('occupied_seats', [])
@@ -1469,7 +1464,7 @@ class RestaurantApp(MDApp):
     def update_cart_totals_live(self):
         total = sum((float(i['price']) * float(i['qty']) for i in self.cart))
         if hasattr(self, 'btn_confirm_cart'):
-            self.btn_confirm_cart.text = f'CONFIRMER - {int(total)} DA'
+            self.btn_confirm_cart.text = f'CONFIRMER ({int(total)} DA)'
         self.update_cart_btn()
 
     def remove_from_cart(self, item):
